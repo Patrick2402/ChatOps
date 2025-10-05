@@ -1,7 +1,3 @@
-// =============================
-// 🌐 ChatOps Backend (Node.js)
-// =============================
-
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
@@ -11,24 +7,20 @@ const AWS = require('aws-sdk');
 const { PrismaClient } = require('@prisma/client');
 const { App, ExpressReceiver } = require('@slack/bolt');
 
-// --- Inicjalizacja ---
 const prisma = new PrismaClient();
 const server = express();
 server.use(cors());
 server.use(express.json());
 
-// --- Slack Receiver ---
 const receiver = new ExpressReceiver({
   signingSecret: process.env.SLACK_SIGNING_SECRET,
 });
 
-// --- Slack App ---
 const slackApp = new App({
   token: process.env.SLACK_BOT_TOKEN,
   receiver,
 });
 
-// --- AWS Konfiguracja ---
 if (process.env.AWS_PROFILE) {
   const credentials = new AWS.SharedIniFileCredentials({
     profile: process.env.AWS_PROFILE,
@@ -38,9 +30,8 @@ if (process.env.AWS_PROFILE) {
 const s3 = new AWS.S3({ region: process.env.AWS_REGION || 'eu-central-1' });
 const ec2 = new AWS.EC2({ region: process.env.AWS_REGION || 'eu-central-1' });
 
-// =============================
-// 🔒 Middleware - Autoryzacja JWT
-// =============================
+
+// middleware do uwierzytelniania JWT
 function authenticate(req, res, next) {
   const authHeader = req.headers.authorization;
   if (!authHeader) return res.status(401).json({ error: 'Brak tokenu' });
@@ -55,9 +46,7 @@ function authenticate(req, res, next) {
   }
 }
 
-// =============================
-// 💬 Middleware Slacka (logowanie komend)
-// =============================
+
 slackApp.use(async ({ message, next }) => {
   if (message?.text) {
     console.log(`📩 Slack command: ${message.text} (od ${message.user})`);
@@ -96,7 +85,7 @@ server.post('/api/register', async (req, res) => {
     });
 
     res.status(201).json({
-      message: '✅ Użytkownik utworzony pomyślnie',
+      message: '✅ User created successfully',
       userId: user.id,
     });
   } catch (error) {
@@ -105,9 +94,7 @@ server.post('/api/register', async (req, res) => {
   }
 });
 
-// =============================
-// 🔑 Logowanie użytkownika
-// =============================
+
 server.post('/api/login', async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password)
@@ -135,9 +122,7 @@ server.post('/api/login', async (req, res) => {
   }
 });
 
-// =============================
-// 📜 Historia komend (JWT Protected)
-// =============================
+
 server.get('/api/history', authenticate, async (req, res) => {
   try {
     const history = await prisma.commandHistory.findMany({
@@ -151,9 +136,7 @@ server.get('/api/history', authenticate, async (req, res) => {
   }
 });
 
-// =============================
-// 🔌 Integracje (np. AWS)
-// =============================
+
 server.get('/api/integrations', (req, res) => {
   const integrations = [
     {
@@ -162,35 +145,30 @@ server.get('/api/integrations', (req, res) => {
         ? 'Connected'
         : 'Not Connected',
       details: process.env.AWS_PROFILE
-        ? `Używany profil: ${process.env.AWS_PROFILE}`
-        : 'Używane klucze IAM',
+        ? `Profile used: ${process.env.AWS_PROFILE}`
+        : 'IAM keys configured',
     },
     {
       name: 'Slack',
       status: process.env.SLACK_BOT_TOKEN ? 'Connected' : 'Not Connected',
       details: process.env.SLACK_BOT_TOKEN
-        ? 'Bot token skonfigurowany'
-        : 'Brak tokenu Slacka',
+        ? 'Bot token configured'
+        : 'No Slack Token',
     },
   ];
   res.json(integrations);
 });
 
-// =============================
-// ⚡️ Routing Slack Events
-// =============================
 server.use('/slack/events', receiver.router);
 
-// =============================
-// 🚀 Start serwera
-// =============================
+
 const PORT = process.env.PORT || 4000;
 server.listen(PORT, async () => {
   console.log(`⚡️ ChatOps Backend running on port ${PORT}`);
   try {
     await prisma.$connect();
-    console.log('🗄️  Połączono z bazą danych przez Prisma');
+    console.log('🗄️  Connected with Prisma');
   } catch (err) {
-    console.error('❌ Błąd połączenia z bazą danych:', err);
+    console.error('❌ Error during connecting with Prisma: ', err);
   }
 });
