@@ -6,6 +6,7 @@ const jwt = require('jsonwebtoken');
 const AWS = require('aws-sdk');
 const { PrismaClient } = require('@prisma/client');
 const { App, ExpressReceiver } = require('@slack/bolt');
+const axios = require('axios'); // NOWOŚĆ: Dodajemy axios
 
 const prisma = new PrismaClient();
 
@@ -20,6 +21,7 @@ const server = receiver.app;
 server.use(cors());
 
 // Konfiguracja AWS
+// ... (bez zmian)
 if (process.env.AWS_PROFILE) {
   const credentials = new AWS.SharedIniFileCredentials({
     profile: process.env.AWS_PROFILE,
@@ -28,6 +30,7 @@ if (process.env.AWS_PROFILE) {
 }
 const s3 = new AWS.S3({ region: process.env.AWS_REGION || 'eu-central-1' });
 const ec2 = new AWS.EC2({ region: process.env.AWS_REGION || 'eu-central-1' });
+
 
 // Slack App Configuration
 const slackApp = new App({
@@ -38,7 +41,7 @@ const slackApp = new App({
 // =============================
 // 🤖 AWS Command Handlers
 // =============================
-
+// ... (bez zmian)
 async function handleListS3Buckets() {
   try {
     const data = await s3.listBuckets().promise();
@@ -191,10 +194,11 @@ async function parseAndExecuteCommand(commandText) {
   };
 }
 
+
 // =============================
 // 💬 Slack Event Handlers
 // =============================
-
+// ... (bez zmian)
 slackApp.event('app_mention', async ({ event, say, client }) => {
   try {
     console.log(`📩 App mention: ${event.text} (od ${event.user})`);
@@ -251,11 +255,67 @@ slackApp.message(async ({ message, say }) => {
   }
 });
 
+
+// ===========================================
+// NOWOŚĆ: Endpoint do obsługi Slack OAuth
+// ===========================================
+server.get('/slack/oauth/callback', async (req, res) => {
+  // Sprawdź, czy użytkownik nie anulował procesu
+  if (req.query.error) {
+    console.warn('Slack OAuth error:', req.query.error);
+    return res.status(403).send(`<h1>Błąd autoryzacji: ${req.query.error}</h1>`);
+  }
+
+  // Sprawdź, czy mamy tymczasowy kod
+  const code = req.query.code;
+  if (!code) {
+    return res.status(400).send('<h1>Błąd: Brak kodu autoryzacyjnego.</h1>');
+  }
+
+  try {
+    // Wymień kod na token dostępu
+    const response = await axios.post('https://slack.com/api/oauth.v2.access', null, {
+      params: {
+        code: code,
+        client_id: process.env.SLACK_CLIENT_ID,
+        client_secret: process.env.SLACK_CLIENT_SECRET,
+      },
+    });
+
+    if (!response.data.ok) {
+      console.error('Slack API error:', response.data.error);
+      throw new Error(response.data.error);
+    }
+    
+    const { team, access_token } = response.data;
+    const teamId = team.id;
+    const token = access_token;
+
+    // Zapisz lub zaktualizuj dane instalacji w bazie
+    await prisma.slackInstallation.upsert({
+      where: { teamId: teamId },
+      update: { token: token },
+      create: { teamId: teamId, token: token },
+    });
+
+    console.log(`✅ Pomyślnie zainstalowano/zaktualizowano aplikację dla teamu: ${team.name} (${teamId})`);
+
+    // Przekieruj użytkownika na stronę z potwierdzeniem
+    // TODO: Zmień ten URL na adres swojej strony w UI
+    // res.redirect('https://twoja-aplikacja.com/slack-success');
+    res.status(200).send('<h1>✅ Aplikacja została pomyślnie zainstalowana! Możesz teraz zamknąć to okno.</h1>');
+
+  } catch (error) {
+    console.error('❌ Błąd podczas wymiany kodu na token:', error);
+    res.status(500).send(`<h1>Wystąpił wewnętrzny błąd serwera. Spróbuj ponownie później.</h1><p>${error.message}</p>`);
+  }
+});
+
+
 // =============================
 // 🌐 HTTP API Routes
 // =============================
-
-// Dodaj express.json() tylko dla API routes
+// ... (bez zmian)
 const apiRouter = express.Router();
 apiRouter.use(express.json());
 
@@ -361,7 +421,6 @@ apiRouter.get('/integrations', (req, res) => {
   res.json(integrations);
 });
 
-// Mount API router
 server.use('/api', apiRouter);
 
 // Health check
@@ -377,7 +436,7 @@ server.get('/health', (req, res) => {
 // =============================
 // 🚀 Start Server
 // =============================
-
+// ... (bez zmian)
 const PORT = process.env.PORT || 4000;
 server.listen(PORT, async () => {
   console.log(`⚡️ ChatOps Backend running on port ${PORT}`);

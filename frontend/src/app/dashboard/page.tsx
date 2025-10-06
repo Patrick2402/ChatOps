@@ -74,15 +74,34 @@ export default function DashboardPage() {
       <nav className="bg-white/80 backdrop-blur-xl border-b border-gray-200/50 sticky top-0 z-50">
         <div className="container mx-auto px-6 py-4">
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-gradient-to-br from-indigo-600 to-purple-600 rounded-xl flex items-center justify-center shadow-lg">
-                <span className="text-xl">🚀</span>
+          <div className="flex items-center gap-6">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-gradient-to-br from-indigo-600 to-purple-600 rounded-xl flex items-center justify-center shadow-lg">
+                  <span className="text-xl">🚀</span>
+                </div>
+                <div>
+                  <h1 className="text-xl font-bold text-gray-900">ChatOps Dashboard</h1>
+                  <p className="text-xs text-gray-500">Manage your infrastructure</p>
+                </div>
               </div>
-              <div>
-                <h1 className="text-xl font-bold text-gray-900">ChatOps Dashboard</h1>
-                <p className="text-xs text-gray-500">Manage your infrastructure</p>
+
+              {/* Navigation Links */}
+              <div className="hidden md:flex items-center gap-1 ml-8">
+                <a
+                  href="/dashboard"
+                  className="px-4 py-2 bg-indigo-50 text-indigo-600 rounded-lg font-medium"
+                >
+                  Dashboard
+                </a>
+                <a
+                  href="/integrations"
+                  className="px-4 py-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-all font-medium"
+                >
+                  Integrations
+                </a>
               </div>
             </div>
+    
 
             <div className="flex items-center gap-4">
               <button className="p-2 hover:bg-gray-100 rounded-lg transition-colors relative">
@@ -237,6 +256,7 @@ export default function DashboardPage() {
             <p className="text-sm text-gray-500 mt-1">
               Last {filteredHistory.length} commands
             </p>
+            <h1>ADD <a href="https://slack.com/oauth/v2/authorize?client_id=8607441651234.9631141913621&scope=app_mentions:read,channels:history,chat:write,im:read,im:write,im:history&user_scope="><img alt="Add to Slack" height="40" width="139" src="https://platform.slack-edge.com/img/add_to_slack.png" srcSet="https://platform.slack-edge.com/img/add_to_slack.png 1x, https://platform.slack-edge.com/img/add_to_slack@2x.png 2x" /></a></h1>
           </div>
 
           {loading ? (
