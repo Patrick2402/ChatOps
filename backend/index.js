@@ -8,19 +8,18 @@ const { PrismaClient } = require('@prisma/client');
 const { App, ExpressReceiver } = require('@slack/bolt');
 
 const prisma = new PrismaClient();
-const server = express();
-server.use(cors());
-server.use(express.json());
 
+// ExpressReceiver dla Slack
 const receiver = new ExpressReceiver({
   signingSecret: process.env.SLACK_SIGNING_SECRET,
+  endpoints: '/slack/events',
 });
 
-const slackApp = new App({
-  token: process.env.SLACK_BOT_TOKEN,
-  receiver,
-});
+// Express server z receiverem
+const server = receiver.app;
+server.use(cors());
 
+// Konfiguracja AWS
 if (process.env.AWS_PROFILE) {
   const credentials = new AWS.SharedIniFileCredentials({
     profile: process.env.AWS_PROFILE,
@@ -30,8 +29,237 @@ if (process.env.AWS_PROFILE) {
 const s3 = new AWS.S3({ region: process.env.AWS_REGION || 'eu-central-1' });
 const ec2 = new AWS.EC2({ region: process.env.AWS_REGION || 'eu-central-1' });
 
+// Slack App Configuration
+const slackApp = new App({
+  token: process.env.SLACK_BOT_TOKEN,
+  receiver: receiver,
+});
 
-// middleware do uwierzytelniania JWT
+// =============================
+// 🤖 AWS Command Handlers
+// =============================
+
+async function handleListS3Buckets() {
+  try {
+    const data = await s3.listBuckets().promise();
+    
+    if (!data.Buckets || data.Buckets.length === 0) {
+      return {
+        success: true,
+        message: '📦 Nie znaleziono żadnych S3 buckets',
+        data: []
+      };
+    }
+
+    const bucketList = data.Buckets.map((bucket, index) => 
+      `${index + 1}. *${bucket.Name}* - utworzony: ${new Date(bucket.CreationDate).toLocaleDateString('pl-PL')}`
+    ).join('\n');
+
+    return {
+      success: true,
+      message: `📦 *Znaleziono ${data.Buckets.length} S3 bucket(s):*\n\n${bucketList}`,
+      data: data.Buckets
+    };
+  } catch (error) {
+    console.error('Error listing S3 buckets:', error);
+    return {
+      success: false,
+      message: `❌ Błąd podczas listowania buckets: ${error.message}`,
+      data: null
+    };
+  }
+}
+
+async function handleListEC2Instances() {
+  try {
+    const data = await ec2.describeInstances().promise();
+    
+    const instances = [];
+    data.Reservations.forEach(reservation => {
+      reservation.Instances.forEach(instance => {
+        const name = instance.Tags?.find(tag => tag.Key === 'Name')?.Value || 'Unnamed';
+        instances.push({
+          id: instance.InstanceId,
+          name: name,
+          state: instance.State.Name,
+          type: instance.InstanceType,
+          ip: instance.PublicIpAddress || 'N/A'
+        });
+      });
+    });
+
+    if (instances.length === 0) {
+      return {
+        success: true,
+        message: '🖥️ Nie znaleziono żadnych instancji EC2',
+        data: []
+      };
+    }
+
+    const instanceList = instances.map((inst, index) => 
+      `${index + 1}. *${inst.name}* (${inst.id})\n   Status: ${inst.state} | Typ: ${inst.type} | IP: ${inst.ip}`
+    ).join('\n\n');
+
+    return {
+      success: true,
+      message: `🖥️ *Znaleziono ${instances.length} instancji EC2:*\n\n${instanceList}`,
+      data: instances
+    };
+  } catch (error) {
+    console.error('Error listing EC2 instances:', error);
+    return {
+      success: false,
+      message: `❌ Błąd podczas listowania instancji: ${error.message}`,
+      data: null
+    };
+  }
+}
+
+async function handleGetBucketInfo(bucketName) {
+  try {
+    await s3.headBucket({ Bucket: bucketName }).promise();
+    
+    const [location, versioning, encryption] = await Promise.all([
+      s3.getBucketLocation({ Bucket: bucketName }).promise().catch(() => ({ LocationConstraint: 'N/A' })),
+      s3.getBucketVersioning({ Bucket: bucketName }).promise().catch(() => ({ Status: 'N/A' })),
+      s3.getBucketEncryption({ Bucket: bucketName }).promise().catch(() => null)
+    ]);
+
+    const objects = await s3.listObjectsV2({ Bucket: bucketName, MaxKeys: 1000 }).promise();
+    
+    const info = [
+      `📦 *Informacje o bucket: ${bucketName}*`,
+      ``,
+      `🌍 Region: ${location.LocationConstraint || 'us-east-1'}`,
+      `📊 Liczba obiektów: ${objects.KeyCount}${objects.IsTruncated ? '+' : ''}`,
+      `🔄 Versioning: ${versioning.Status || 'Disabled'}`,
+      `🔐 Encryption: ${encryption ? 'Enabled' : 'Disabled'}`
+    ].join('\n');
+
+    return {
+      success: true,
+      message: info,
+      data: { location, versioning, encryption, objectCount: objects.KeyCount }
+    };
+  } catch (error) {
+    console.error('Error getting bucket info:', error);
+    return {
+      success: false,
+      message: `❌ Błąd: ${error.code === 'NoSuchBucket' ? 'Bucket nie istnieje' : error.message}`,
+      data: null
+    };
+  }
+}
+
+async function parseAndExecuteCommand(commandText) {
+  const text = commandText.toLowerCase().trim();
+
+  if (text.includes('list s3') || text.includes('list buckets')) {
+    return await handleListS3Buckets();
+  }
+
+  if (text.includes('list ec2') || text.includes('ec2 status') || text.includes('list instances')) {
+    return await handleListEC2Instances();
+  }
+
+  const bucketInfoMatch = text.match(/bucket info (.+)/) || text.match(/info (.+)/);
+  if (bucketInfoMatch) {
+    const bucketName = bucketInfoMatch[1].trim();
+    return await handleGetBucketInfo(bucketName);
+  }
+
+  if (text.includes('help') || text.includes('pomoc')) {
+    return {
+      success: true,
+      message: `🤖 *Dostępne komendy:*\n\n` +
+               `📦 *S3 Commands:*\n` +
+               `• \`list s3 buckets\` - Lista wszystkich S3 buckets\n` +
+               `• \`bucket info <nazwa>\` - Szczegóły bucket\n\n` +
+               `🖥️ *EC2 Commands:*\n` +
+               `• \`list ec2 instances\` - Lista instancji EC2\n` +
+               `• \`ec2 status\` - Status instancji\n\n` +
+               `❓ *Inne:*\n` +
+               `• \`help\` - Ta wiadomość`,
+      data: null
+    };
+  }
+
+  return {
+    success: false,
+    message: `❓ Nieznana komenda: "${commandText}"\n\nWpisz \`help\` aby zobaczyć dostępne komendy.`,
+    data: null
+  };
+}
+
+// =============================
+// 💬 Slack Event Handlers
+// =============================
+
+slackApp.event('app_mention', async ({ event, say, client }) => {
+  try {
+    console.log(`📩 App mention: ${event.text} (od ${event.user})`);
+
+    const commandText = event.text.replace(/<@[A-Z0-9]+>/g, '').trim();
+
+    await say('⏳ Przetwarzam komendę...');
+
+    const result = await parseAndExecuteCommand(commandText);
+
+    await prisma.commandHistory.create({
+      data: {
+        user: event.user,
+        command: commandText,
+        response: result.message,
+        success: result.success,
+      },
+    }).catch(err => console.error('Error saving to history:', err));
+
+    await say(result.message);
+
+  } catch (error) {
+    console.error('❌ Error handling app mention:', error);
+    await say(`❌ Wystąpił błąd: ${error.message}`).catch(console.error);
+  }
+});
+
+slackApp.message(async ({ message, say }) => {
+  if (message.subtype || message.thread_ts) return;
+
+  try {
+    console.log(`📩 Direct message: ${message.text} (od ${message.user})`);
+
+    const commandText = message.text.trim();
+
+    await say('⏳ Przetwarzam komendę...');
+
+    const result = await parseAndExecuteCommand(commandText);
+
+    await prisma.commandHistory.create({
+      data: {
+        user: message.user,
+        command: commandText,
+        response: result.message,
+        success: result.success,
+      },
+    }).catch(err => console.error('Error saving to history:', err));
+
+    await say(result.message);
+
+  } catch (error) {
+    console.error('❌ Error handling message:', error);
+    await say(`❌ Wystąpił błąd: ${error.message}`).catch(console.error);
+  }
+});
+
+// =============================
+// 🌐 HTTP API Routes
+// =============================
+
+// Dodaj express.json() tylko dla API routes
+const apiRouter = express.Router();
+apiRouter.use(express.json());
+
+// Middleware do uwierzytelniania JWT
 function authenticate(req, res, next) {
   const authHeader = req.headers.authorization;
   if (!authHeader) return res.status(401).json({ error: 'Brak tokenu' });
@@ -46,30 +274,7 @@ function authenticate(req, res, next) {
   }
 }
 
-
-slackApp.use(async ({ message, next }) => {
-  if (message?.text) {
-    console.log(`📩 Slack command: ${message.text} (od ${message.user})`);
-    try {
-      await prisma.commandHistory.create({
-        data: {
-          user: message.user,
-          command: message.text,
-          response: "Processing...",
-          success: true,
-        },
-      });
-    } catch (error) {
-      console.error('❌ Błąd zapisu komendy:', error);
-    }
-  }
-  await next();
-});
-
-// =============================
-// 🔐 Rejestracja użytkownika
-// =============================
-server.post('/api/register', async (req, res) => {
+apiRouter.post('/register', async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password)
     return res.status(400).json({ error: 'Email i hasło są wymagane' });
@@ -94,8 +299,7 @@ server.post('/api/register', async (req, res) => {
   }
 });
 
-
-server.post('/api/login', async (req, res) => {
+apiRouter.post('/login', async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password)
     return res.status(400).json({ error: 'Email i hasło są wymagane' });
@@ -122,12 +326,11 @@ server.post('/api/login', async (req, res) => {
   }
 });
 
-
-server.get('/api/history', authenticate, async (req, res) => {
+apiRouter.get('/history', authenticate, async (req, res) => {
   try {
     const history = await prisma.commandHistory.findMany({
       orderBy: { createdAt: 'desc' },
-      take: 20,
+      take: 50,
     });
     res.json(history);
   } catch (error) {
@@ -136,8 +339,7 @@ server.get('/api/history', authenticate, async (req, res) => {
   }
 });
 
-
-server.get('/api/integrations', (req, res) => {
+apiRouter.get('/integrations', (req, res) => {
   const integrations = [
     {
       name: 'AWS',
@@ -159,16 +361,38 @@ server.get('/api/integrations', (req, res) => {
   res.json(integrations);
 });
 
-server.use('/slack/events', receiver.router);
+// Mount API router
+server.use('/api', apiRouter);
 
+// Health check
+server.get('/health', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    timestamp: new Date().toISOString(),
+    slackConnected: !!process.env.SLACK_BOT_TOKEN,
+    awsConnected: !!(process.env.AWS_ACCESS_KEY_ID || process.env.AWS_PROFILE)
+  });
+});
+
+// =============================
+// 🚀 Start Server
+// =============================
 
 const PORT = process.env.PORT || 4000;
 server.listen(PORT, async () => {
   console.log(`⚡️ ChatOps Backend running on port ${PORT}`);
+  console.log(`📱 Slack Events: http://localhost:${PORT}/slack/events`);
+  
   try {
     await prisma.$connect();
     console.log('🗄️  Connected with Prisma');
   } catch (err) {
-    console.error('❌ Error during connecting with Prisma: ', err);
+    console.error('❌ Error during connecting with Prisma:', err);
   }
+
+  console.log('\n🤖 Bot is ready! Available commands:');
+  console.log('   • list s3 buckets');
+  console.log('   • list ec2 instances');
+  console.log('   • bucket info <nazwa>');
+  console.log('   • help\n');
 });
